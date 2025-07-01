@@ -1,45 +1,11 @@
 import express, { Request, Response } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
 
 const server = new McpServer({
-  name: "jokesMCP",
-  description: "A server that provides jokes",
+  name: "mcp-streamable-http",
   version: "1.0.0",
-  tools: [
-    {
-      name: "get-chuck-joke",
-      description: "Get a random Chuck Norris joke",
-      parameters: {},
-    },
-    {
-      name: "get-chuck-categories",
-      description: "Get all available categories for Chuck Norris jokes",
-      parameters: {},
-    },
-    {
-      name: "get-dad-joke",
-      description: "Get a random dad joke",
-      parameters: {},
-    },
-    {
-      name: "get-yo-mama-joke",
-      description: "Get a random Yo Mama joke",
-      parameters: {},
-    },
-    {
-      name: "ask-copilot-agent",
-      description: "Ask a Copilot Studio agent using Direct Line. Supports multi-turn.",
-      parameters: {
-        text: { type: "string", description: "The user input text" },
-        conversationId: {
-          type: "string",
-          description: "Optional conversation ID to maintain multi-turn context",
-          optional: true,
-        },
-      },
-    },
-  ],
 });
 
 // Get Chuck Norris joke tool
@@ -48,6 +14,29 @@ const getChuckJoke = server.tool(
   "Get a random Chuck Norris joke",
   async () => {
     const response = await fetch("https://api.chucknorris.io/jokes/random");
+    const data = await response.json();
+    return {
+      content: [
+        {
+          type: "text",
+          text: data.value,
+        },
+      ],
+    };
+  }
+);
+
+// Get Chuck Norris joke by category tool
+const getChuckJokeByCategory = server.tool(
+  "get-chuck-joke-by-category",
+  "Get a random Chuck Norris joke by category",
+  {
+    category: z.string().describe("Category of the Chuck Norris joke"),
+  },
+  async (params: { category: string }) => {
+    const response = await fetch(
+      `https://api.chucknorris.io/jokes/random?category=${params.category}`
+    );
     const data = await response.json();
     return {
       content: [
@@ -100,38 +89,16 @@ const getDadJoke = server.tool(
   }
 );
 
-// Get Yo Mama joke tool
-const getYoMamaJoke = server.tool(
-  "get-yo-mama-joke",
-  "Get a random Yo Mama joke",
-  async () => {
-    const response = await fetch("https://www.yomama-jokes.com/api/v1/jokes/random");
-    const data = await response.json();
-    return {
-      content: [
-        {
-          type: "text",
-          text: data.joke,
-        },
-      ],
-    };
-  }
-);
-
-// Ask Copilot Studio agent tool
-const askCopilotAgent = server.tool(
-  "ask-copilot-agent",
-  "Ask a Copilot Studio agent using Direct Line. Supports multi-turn.",
+// Ask Power Platform Docs agent tool
+const askPowerPlatformDocs = server.tool(
+  "ask-power-platform-docs",
+  "Ask the Power Platform Docs Copilot agent via Direct Line",
   {
-    text: { type: "string", description: "The user input text" },
-    conversationId: {
-      type: "string",
-      description: "Optional conversation ID to maintain multi-turn context",
-      optional: true,
-    },
+    text: z.string().describe("Question to ask the documentation agent"),
+    conversationId: z.string().optional().describe("Optional conversation ID for multi-turn chat"),
   },
   async ({ text, conversationId }) => {
-    const directLineSecret = "YOUR_DIRECT_LINE_SECRET_HERE"; // Replace with secure value or env var
+    const directLineSecret = "YOUR_DIRECT_LINE_SECRET_HERE"; // 🔁 Replace this with your actual Direct Line secret
     let convoId = conversationId;
 
     try {
@@ -185,7 +152,7 @@ const askCopilotAgent = server.tool(
         content: [
           {
             type: "text",
-            text: last?.text || "[No reply from Copilot agent]",
+            text: last?.text || "[No reply from documentation agent]",
           },
         ],
         metadata: {
@@ -198,7 +165,7 @@ const askCopilotAgent = server.tool(
         content: [
           {
             type: "text",
-            text: "❌ Error talking to Copilot agent.",
+            text: "❌ Error talking to documentation agent.",
           },
         ],
       };
@@ -207,42 +174,74 @@ const askCopilotAgent = server.tool(
 );
 
 const app = express();
+app.use(express.json());
 
-// to support multiple simultaneous connections we have a lookup object from
-// sessionId to transport
-const transports: { [sessionId: string]: SSEServerTransport } = {};
-
-app.get("/sse", async (req: Request, res: Response) => {
-  const host = req.get("host");
-  const fullUri = `https://${host}/jokes`;
-  const transport = new SSEServerTransport(fullUri, res);
-  transports[transport.sessionId] = transport;
-
-  res.on("close", () => {
-    delete transports[transport.sessionId];
+const transport: StreamableHTTPServerTransport =
+  new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined, // set to undefined for stateless servers
   });
 
+// Setup routes for the server
+const setupServer = async () => {
   await server.connect(transport);
+};
 
-  // ✅ Respond to tool discovery handshake
-  await transport.handleRequest(req, res);
-});
-
-app.post("/jokes", async (req: Request, res: Response) => {
-  const sessionId = req.query.sessionId as string;
-  const transport = transports[sessionId];
-  if (transport) {
-    await transport.handlePostMessage(req, res);
-  } else {
-    res.status(400).send("No transport found for sessionId");
+app.post("/mcp", async (req: Request, res: Response) => {
+  console.log("Received MCP request:", req.body);
+  try {
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error("Error handling MCP request:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32603,
+          message: "Internal server error",
+        },
+        id: null,
+      });
+    }
   }
 });
 
-app.get("/", (_req, res) => {
-  res.send("The Jokes MCP server is running!");
+app.get("/mcp", async (req: Request, res: Response) => {
+  console.log("Received GET MCP request");
+  res.writeHead(405).end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: "Method not allowed.",
+      },
+      id: null,
+    })
+  );
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`✅ Server is running at http://localhost:${PORT}`);
+app.delete("/mcp", async (req: Request, res: Response) => {
+  console.log("Received DELETE MCP request");
+  res.writeHead(405).end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: "Method not allowed.",
+      },
+      id: null,
+    })
+  );
 });
+
+// Start the server
+const PORT = process.env.PORT || 3000;
+setupServer()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`MCP Streamable HTTP Server listening on port ${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error("Failed to set up the server:", error);
+    process.exit(1);
+  });
