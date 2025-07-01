@@ -98,7 +98,7 @@ const askPowerPlatformDocs = server.tool(
     conversationId: z.string().optional().describe("Optional conversation ID for multi-turn chat"),
   },
   async ({ text, conversationId }) => {
-    const directLineSecret = "YOUR_DIRECT_LINE_SECRET_HERE"; // 🔁 Replace this with your actual Direct Line secret
+    const directLineSecret = "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // 🔁 Replace this with your actual Direct Line secret
     let convoId = conversationId;
 
     try {
