@@ -9,7 +9,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 
 /* ------------------------------------------------------------------ */
-/*                          MCP SERVER SETUP                           */
+/*                         MCP SERVER CONFIG                           */
 /* ------------------------------------------------------------------ */
 
 const server = new McpServer({
@@ -63,26 +63,30 @@ const getDadJoke = server.tool("get-dad-joke", "Get a random dad joke", async ()
 });
 
 /* ------------------------------------------------------------------ */
-/*      NEW  ask-powerplatform-docs  TOOL  (Direct Line)               */
+/*                POWER PLATFORM DOCS DIRECT-LINE TOOL                */
 /* ------------------------------------------------------------------ */
 
 const directLineSecret =
-  "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // hard-coded secret
+  "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY";
+
+const buildActivitiesUrl = (conversationId: string, watermark?: string) =>
+  watermark
+    ? `https://directline.botframework.com/v3/directline/conversations/${conversationId}/activities?watermark=${encodeURIComponent(
+        watermark
+      )}`
+    : `https://directline.botframework.com/v3/directline/conversations/${conversationId}/activities`;
 
 async function pollForReply(
   conversationId: string,
   watermark: string | undefined
-): Promise<{ text?: string; attachments?: any[]; newWatermark: string } | null> {
-  const url =
-    `https://directline.botframework.com/v3/directline/conversations/${conversationId}/activities` +
-    (watermark ? `?watermark=${watermark as string}` : "");   // ← cast fixes TS2345
-
-  const poll = await fetch(url, {
+): Promise<{ text?: string; attachments?: any[]; watermark: string } | null> {
+  const poll = await fetch(buildActivitiesUrl(conversationId, watermark), {
     headers: { Authorization: `Bearer ${directLineSecret}` },
   });
   if (!poll.ok) throw new Error(`Poll ${poll.status}`);
   const data = await poll.json();
   console.log("🔎 activities:", JSON.stringify(data.activities, null, 2));
+
   const botMsgs = data.activities.filter(
     (a: any) => a.from?.id !== "mcp-tool"
   );
@@ -91,7 +95,7 @@ async function pollForReply(
     return {
       text: last.text,
       attachments: last.attachments,
-      newWatermark: data.watermark,
+      watermark: data.watermark,
     };
   }
   return null;
@@ -112,39 +116,39 @@ const askPowerPlatformDocs = server.tool(
     let watermark: string | undefined;
 
     try {
+      /* 1️⃣  Create conversation if needed */
       if (!convoId) {
-        const rc = await fetch(
+        const resp = await fetch(
           "https://directline.botframework.com/v3/directline/conversations",
           { method: "POST", headers: { Authorization: `Bearer ${directLineSecret}` } }
         );
-        if (!rc.ok) throw new Error(`StartConv ${rc.status}`);
-        const d = await rc.json();
+        if (!resp.ok) throw new Error(`StartConv ${resp.status}`);
+        const d = await resp.json();
         convoId = d.conversationId;
         watermark = d.watermark;
       }
 
-      const post = await fetch(
-        `https://directline.botframework.com/v3/directline/conversations/${convoId}/activities`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${directLineSecret}`,
-          },
-          body: JSON.stringify({
-            type: "message",
-            from: { id: "mcp-tool" },
-            text,
-          }),
-        }
-      );
+      /* 2️⃣  Post user message */
+      const post = await fetch(buildActivitiesUrl(convoId), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${directLineSecret}`,
+        },
+        body: JSON.stringify({
+          type: "message",
+          from: { id: "mcp-tool" },
+          text,
+        }),
+      });
       if (!post.ok) throw new Error(`PostMsg ${post.status}`);
 
+      /* 3️⃣  Poll up to 10 s */
       let reply = null;
       for (let i = 0; i < 10 && !reply; i++) {
         await new Promise((r) => setTimeout(r, 1000));
         reply = await pollForReply(convoId, watermark);
-        if (reply) watermark = reply.newWatermark;
+        if (reply) watermark = reply.watermark;
       }
 
       const replyText =
@@ -217,7 +221,7 @@ const PORT = process.env.PORT || 3000;
 setupServer()
   .then(() =>
     app.listen(PORT, () =>
-      console.log(`MCP Streamable HTTP Server running on port ${PORT}`)
+      console.log(`✅ MCP Streamable HTTP Server running on port ${PORT}`)
     )
   )
   .catch((err) => {
