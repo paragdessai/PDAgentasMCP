@@ -67,7 +67,34 @@ const getDadJoke = server.tool("get-dad-joke", "Get a random dad joke", async ()
 /* ------------------------------------------------------------------ */
 
 const directLineSecret =
-  "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // hard-coded for now
+  "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // ← hard-coded secret
+
+async function pollForReply(
+  conversationId: string,
+  watermark: string | undefined
+): Promise<{ text?: string; attachments?: any[]; newWatermark: string } | null> {
+  const poll = await fetch(
+    `https://directline.botframework.com/v3/directline/conversations/${conversationId}/activities${
+      watermark ? `?watermark=${watermark}` : ""
+    }`,
+    { headers: { Authorization: `Bearer ${directLineSecret}` } }
+  );
+  if (!poll.ok) throw new Error(`Poll ${poll.status}`);
+  const data = await poll.json();
+  console.log("🔎 activities:", JSON.stringify(data.activities, null, 2));
+  const botMessages = data.activities.filter(
+    (a: any) => a.from?.id !== "mcp-tool"
+  );
+  if (botMessages.length) {
+    const last = botMessages.pop();
+    return {
+      text: last.text,
+      attachments: last.attachments,
+      newWatermark: data.watermark,
+    };
+  }
+  return null;
+}
 
 const askPowerPlatformDocs = server.tool(
   "ask-powerplatform-docs",
@@ -81,19 +108,23 @@ const askPowerPlatformDocs = server.tool(
   },
   async ({ text, conversationId }) => {
     let convoId = conversationId;
+    let watermark: string | undefined;
 
     try {
+      /* 1️⃣  Create conversation if needed */
       if (!convoId) {
-        const newConv = await fetch(
+        const resp = await fetch(
           "https://directline.botframework.com/v3/directline/conversations",
           { method: "POST", headers: { Authorization: `Bearer ${directLineSecret}` } }
         );
-        if (!newConv.ok) throw new Error(`StartConv ${newConv.status}`);
-        const d = await newConv.json();
+        if (!resp.ok) throw new Error(`StartConv ${resp.status}`);
+        const d = await resp.json();
         convoId = d.conversationId;
+        watermark = d.watermark;
       }
 
-      await fetch(
+      /* 2️⃣  Post the user message */
+      const post = await fetch(
         `https://directline.botframework.com/v3/directline/conversations/${convoId}/activities`,
         {
           method: "POST",
@@ -108,27 +139,23 @@ const askPowerPlatformDocs = server.tool(
           }),
         }
       );
+      if (!post.ok) throw new Error(`PostMsg ${post.status}`);
 
-      await new Promise((r) => setTimeout(r, 1500));
+      /* 3️⃣  Poll for up to 10 s or until reply */
+      let reply: { text?: string; attachments?: any[]; newWatermark: string } | null = null;
+      for (let i = 0; i < 10 && !reply; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        reply = await pollForReply(convoId, watermark);
+        if (reply) watermark = reply.newWatermark;
+      }
 
-      const poll = await fetch(
-        `https://directline.botframework.com/v3/directline/conversations/${convoId}/activities`,
-        { headers: { Authorization: `Bearer ${directLineSecret}` } }
-      );
-      if (!poll.ok) throw new Error(`Poll ${poll.status}`);
-      const aData = await poll.json();
-      const replies = aData.activities.filter(
-        (a: any) => a.from.id !== "mcp-tool"
-      );
-      const last = replies.pop();
+      const replyText =
+        reply?.text ||
+        (reply?.attachments ? "[Got an attachment reply]" : undefined) ||
+        "[No reply from documentation agent]";
 
       return {
-        content: [
-          {
-            type: "text",
-            text: last?.text ?? "[No reply from documentation agent]",
-          },
-        ],
+        content: [{ type: "text", text: replyText }],
         metadata: { conversationId: convoId },
       };
     } catch (err: any) {
@@ -137,7 +164,9 @@ const askPowerPlatformDocs = server.tool(
         content: [
           {
             type: "text",
-            text: "❌ Error contacting documentation agent.",
+            text:
+              "❌ Error contacting documentation agent. " +
+              (err?.message ?? ""),
           },
         ],
       };
@@ -157,7 +186,6 @@ const transport = new StreamableHTTPServerTransport({
 });
 const setupServer = () => server.connect(transport);
 
-/* ---- 405 helper -- returns void (no value) -- satisfies RequestHandler ---- */
 const methodNotAllowed: RequestHandler = (
   _req: Request,
   res: Response,
