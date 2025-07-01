@@ -67,26 +67,27 @@ const getDadJoke = server.tool("get-dad-joke", "Get a random dad joke", async ()
 /* ------------------------------------------------------------------ */
 
 const directLineSecret =
-  "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // ← hard-coded secret
+  "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // hard-coded secret
 
 async function pollForReply(
   conversationId: string,
   watermark: string | undefined
 ): Promise<{ text?: string; attachments?: any[]; newWatermark: string } | null> {
-  const poll = await fetch(
-    `https://directline.botframework.com/v3/directline/conversations/${conversationId}/activities${
-      watermark ? `?watermark=${watermark}` : ""
-    }`,
-    { headers: { Authorization: `Bearer ${directLineSecret}` } }
-  );
+  const url =
+    `https://directline.botframework.com/v3/directline/conversations/${conversationId}/activities` +
+    (watermark ? `?watermark=${watermark as string}` : "");   // ← cast fixes TS2345
+
+  const poll = await fetch(url, {
+    headers: { Authorization: `Bearer ${directLineSecret}` },
+  });
   if (!poll.ok) throw new Error(`Poll ${poll.status}`);
   const data = await poll.json();
   console.log("🔎 activities:", JSON.stringify(data.activities, null, 2));
-  const botMessages = data.activities.filter(
+  const botMsgs = data.activities.filter(
     (a: any) => a.from?.id !== "mcp-tool"
   );
-  if (botMessages.length) {
-    const last = botMessages.pop();
+  if (botMsgs.length) {
+    const last = botMsgs.pop();
     return {
       text: last.text,
       attachments: last.attachments,
@@ -111,19 +112,17 @@ const askPowerPlatformDocs = server.tool(
     let watermark: string | undefined;
 
     try {
-      /* 1️⃣  Create conversation if needed */
       if (!convoId) {
-        const resp = await fetch(
+        const rc = await fetch(
           "https://directline.botframework.com/v3/directline/conversations",
           { method: "POST", headers: { Authorization: `Bearer ${directLineSecret}` } }
         );
-        if (!resp.ok) throw new Error(`StartConv ${resp.status}`);
-        const d = await resp.json();
+        if (!rc.ok) throw new Error(`StartConv ${rc.status}`);
+        const d = await rc.json();
         convoId = d.conversationId;
         watermark = d.watermark;
       }
 
-      /* 2️⃣  Post the user message */
       const post = await fetch(
         `https://directline.botframework.com/v3/directline/conversations/${convoId}/activities`,
         {
@@ -141,8 +140,7 @@ const askPowerPlatformDocs = server.tool(
       );
       if (!post.ok) throw new Error(`PostMsg ${post.status}`);
 
-      /* 3️⃣  Poll for up to 10 s or until reply */
-      let reply: { text?: string; attachments?: any[]; newWatermark: string } | null = null;
+      let reply = null;
       for (let i = 0; i < 10 && !reply; i++) {
         await new Promise((r) => setTimeout(r, 1000));
         reply = await pollForReply(convoId, watermark);
@@ -164,9 +162,7 @@ const askPowerPlatformDocs = server.tool(
         content: [
           {
             type: "text",
-            text:
-              "❌ Error contacting documentation agent. " +
-              (err?.message ?? ""),
+            text: "❌ Error contacting documentation agent.",
           },
         ],
       };
