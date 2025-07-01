@@ -9,7 +9,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 
 /* ------------------------------------------------------------------ */
-/*                         MCP SERVER CONFIG                           */
+/*                       MCP SERVER INITIALISE                         */
 /* ------------------------------------------------------------------ */
 
 const server = new McpServer({
@@ -23,7 +23,6 @@ const server = new McpServer({
 
 const getChuckJoke = server.tool("get-chuck-joke", "Get a random Chuck Norris joke", async () => {
   const r = await fetch("https://api.chucknorris.io/jokes/random");
-  if (!r.ok) throw new Error(`Chuck API ${r.status}`);
   const d = await r.json();
   return { content: [{ type: "text", text: d.value }] };
 });
@@ -31,12 +30,11 @@ const getChuckJoke = server.tool("get-chuck-joke", "Get a random Chuck Norris jo
 const getChuckJokeByCategory = server.tool(
   "get-chuck-joke-by-category",
   "Get a random Chuck Norris joke by category",
-  { category: z.string().describe("Category of the Chuck Norris joke") },
+  { category: z.string() },
   async ({ category }) => {
     const r = await fetch(
       `https://api.chucknorris.io/jokes/random?category=${category}`
     );
-    if (!r.ok) throw new Error(`Chuck API ${r.status}`);
     const d = await r.json();
     return { content: [{ type: "text", text: d.value }] };
   }
@@ -47,7 +45,6 @@ const getChuckCategories = server.tool(
   "Get all available categories for Chuck Norris jokes",
   async () => {
     const r = await fetch("https://api.chucknorris.io/jokes/categories");
-    if (!r.ok) throw new Error(`Chuck API ${r.status}`);
     const d = await r.json();
     return { content: [{ type: "text", text: d.join(", ") }] };
   }
@@ -57,13 +54,12 @@ const getDadJoke = server.tool("get-dad-joke", "Get a random dad joke", async ()
   const r = await fetch("https://icanhazdadjoke.com/", {
     headers: { Accept: "application/json" },
   });
-  if (!r.ok) throw new Error(`DadJoke API ${r.status}`);
   const d = await r.json();
   return { content: [{ type: "text", text: d.joke }] };
 });
 
 /* ------------------------------------------------------------------ */
-/*                POWER PLATFORM DOCS DIRECT-LINE TOOL                */
+/*              POWER PLATFORM DOCS AGENT (DIRECT LINE)                */
 /* ------------------------------------------------------------------ */
 
 const directLineSecret =
@@ -79,24 +75,17 @@ const buildActivitiesUrl = (conversationId: string, watermark?: string) =>
 async function pollForReply(
   conversationId: string,
   watermark: string | undefined
-): Promise<{ text?: string; attachments?: any[]; watermark: string } | null> {
+) {
   const poll = await fetch(buildActivitiesUrl(conversationId, watermark), {
     headers: { Authorization: `Bearer ${directLineSecret}` },
   });
-  if (!poll.ok) throw new Error(`Poll ${poll.status}`);
   const data = await poll.json();
-  console.log("🔎 activities:", JSON.stringify(data.activities, null, 2));
-
   const botMsgs = data.activities.filter(
     (a: any) => a.from?.id !== "mcp-tool"
   );
   if (botMsgs.length) {
     const last = botMsgs.pop();
-    return {
-      text: last.text,
-      attachments: last.attachments,
-      watermark: data.watermark,
-    };
+    return { last, watermark: data.watermark };
   }
   return null;
 }
@@ -105,31 +94,28 @@ const askPowerPlatformDocs = server.tool(
   "ask-powerplatform-docs",
   "Ask the Power Platform documentation Copilot agent (multi-turn supported)",
   {
-    text: z.string().describe("Question for the documentation agent"),
-    conversationId: z
-      .string()
-      .optional()
-      .describe("Direct Line conversationId for follow-up turns"),
+    text: z.string(),
+    conversationId: z.string().optional(),
   },
   async ({ text, conversationId }) => {
-    let convoId = conversationId;
+    let convoId: string | undefined = conversationId;
     let watermark: string | undefined;
 
     try {
-      /* 1️⃣  Create conversation if needed */
       if (!convoId) {
-        const resp = await fetch(
+        const c = await fetch(
           "https://directline.botframework.com/v3/directline/conversations",
           { method: "POST", headers: { Authorization: `Bearer ${directLineSecret}` } }
         );
-        if (!resp.ok) throw new Error(`StartConv ${resp.status}`);
-        const d = await resp.json();
+        const d = await c.json();
         convoId = d.conversationId;
         watermark = d.watermark;
       }
 
-      /* 2️⃣  Post user message */
-      const post = await fetch(buildActivitiesUrl(convoId), {
+      /*  assure TypeScript convoId is string from this point  */
+      const cid = convoId!;
+
+      await fetch(buildActivitiesUrl(cid), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -141,41 +127,33 @@ const askPowerPlatformDocs = server.tool(
           text,
         }),
       });
-      if (!post.ok) throw new Error(`PostMsg ${post.status}`);
 
-      /* 3️⃣  Poll up to 10 s */
       let reply = null;
       for (let i = 0; i < 10 && !reply; i++) {
         await new Promise((r) => setTimeout(r, 1000));
-        reply = await pollForReply(convoId, watermark);
+        reply = await pollForReply(cid, watermark);
         if (reply) watermark = reply.watermark;
       }
 
       const replyText =
-        reply?.text ||
-        (reply?.attachments ? "[Got an attachment reply]" : undefined) ||
-        "[No reply from documentation agent]";
+        reply?.last?.text ||
+        (reply?.last?.attachments ? "[Attachment reply]" : "[No reply]");
 
       return {
         content: [{ type: "text", text: replyText }],
-        metadata: { conversationId: convoId },
+        metadata: { conversationId: cid },
       };
-    } catch (err: any) {
-      console.error("Direct Line failure:", err);
+    } catch (err) {
+      console.error("Direct Line error", err);
       return {
-        content: [
-          {
-            type: "text",
-            text: "❌ Error contacting documentation agent.",
-          },
-        ],
+        content: [{ type: "text", text: "❌ Error contacting documentation agent." }],
       };
     }
   }
 );
 
 /* ------------------------------------------------------------------ */
-/*           EXPRESS  +  STREAMABLE HTTP MCP TRANSPORT                 */
+/*                    EXPRESS + MCP TRANSPORT                          */
 /* ------------------------------------------------------------------ */
 
 const app = express();
@@ -184,7 +162,7 @@ app.use(express.json());
 const transport = new StreamableHTTPServerTransport({
   sessionIdGenerator: undefined,
 });
-const setupServer = () => server.connect(transport);
+server.connect(transport);
 
 const methodNotAllowed: RequestHandler = (
   _req: Request,
@@ -198,33 +176,11 @@ const methodNotAllowed: RequestHandler = (
   });
 };
 
-app.post("/mcp", async (req: Request, res: Response) => {
-  try {
-    await transport.handleRequest(req, res, req.body);
-  } catch (err) {
-    console.error("MCP handler error:", err);
-    if (!res.headersSent) {
-      res.status(500).json({
-        jsonrpc: "2.0",
-        error: { code: -32603, message: "Internal server error" },
-        id: null,
-      });
-    }
-  }
-});
+app.post("/mcp", (req, res) => transport.handleRequest(req, res, req.body));
 app.get("/mcp", methodNotAllowed);
 app.delete("/mcp", methodNotAllowed);
 
-/* ------------------------------------------------------------------ */
-
 const PORT = process.env.PORT || 3000;
-setupServer()
-  .then(() =>
-    app.listen(PORT, () =>
-      console.log(`✅ MCP Streamable HTTP Server running on port ${PORT}`)
-    )
-  )
-  .catch((err) => {
-    console.error("Failed to start MCP server:", err);
-    process.exit(1);
-  });
+app.listen(PORT, () =>
+  console.log(`✅ MCP Streamable HTTP Server running on port ${PORT}`)
+);
