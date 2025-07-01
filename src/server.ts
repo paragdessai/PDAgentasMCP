@@ -67,7 +67,7 @@ const getDadJoke = server.tool("get-dad-joke", "Get a random dad joke", async ()
 /* ------------------------------------------------------------------ */
 
 const directLineSecret =
-  "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // ← hard-coded here
+  "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // hard-coded for now
 
 const askPowerPlatformDocs = server.tool(
   "ask-powerplatform-docs",
@@ -83,25 +83,17 @@ const askPowerPlatformDocs = server.tool(
     let convoId = conversationId;
 
     try {
-      // 1) Create conversation if none supplied
       if (!convoId) {
         const newConv = await fetch(
           "https://directline.botframework.com/v3/directline/conversations",
-          {
-            method: "POST",
-            headers: { Authorization: `Bearer ${directLineSecret}` },
-          }
+          { method: "POST", headers: { Authorization: `Bearer ${directLineSecret}` } }
         );
-        if (!newConv.ok) {
-          const body = await newConv.text();
-          throw new Error(`StartConv ${newConv.status}: ${body}`);
-        }
+        if (!newConv.ok) throw new Error(`StartConv ${newConv.status}`);
         const d = await newConv.json();
         convoId = d.conversationId;
       }
 
-      // 2) Post user message
-      const post = await fetch(
+      await fetch(
         `https://directline.botframework.com/v3/directline/conversations/${convoId}/activities`,
         {
           method: "POST",
@@ -116,21 +108,14 @@ const askPowerPlatformDocs = server.tool(
           }),
         }
       );
-      if (!post.ok) {
-        const body = await post.text();
-        throw new Error(`PostMsg ${post.status}: ${body}`);
-      }
 
-      // 3) Wait briefly then fetch bot reply
       await new Promise((r) => setTimeout(r, 1500));
+
       const poll = await fetch(
         `https://directline.botframework.com/v3/directline/conversations/${convoId}/activities`,
         { headers: { Authorization: `Bearer ${directLineSecret}` } }
       );
-      if (!poll.ok) {
-        const body = await poll.text();
-        throw new Error(`Poll ${poll.status}: ${body}`);
-      }
+      if (!poll.ok) throw new Error(`Poll ${poll.status}`);
       const aData = await poll.json();
       const replies = aData.activities.filter(
         (a: any) => a.from.id !== "mcp-tool"
@@ -152,8 +137,7 @@ const askPowerPlatformDocs = server.tool(
         content: [
           {
             type: "text",
-            text: "❌ Error contacting documentation agent. " +
-              (err?.message ?? ""),
+            text: "❌ Error contacting documentation agent.",
           },
         ],
       };
@@ -171,20 +155,20 @@ app.use(express.json());
 const transport = new StreamableHTTPServerTransport({
   sessionIdGenerator: undefined,
 });
-
 const setupServer = () => server.connect(transport);
 
-/* Shared 405 handler */
+/* ---- 405 helper -- returns void (no value) -- satisfies RequestHandler ---- */
 const methodNotAllowed: RequestHandler = (
   _req: Request,
   res: Response,
   _next: NextFunction
-) =>
+): void => {
   res.status(405).json({
     jsonrpc: "2.0",
     error: { code: -32000, message: "Method not allowed." },
     id: null,
   });
+};
 
 app.post("/mcp", async (req: Request, res: Response) => {
   try {
