@@ -5,7 +5,7 @@ import { z } from "zod";
 import axios from "axios";
 
 // 🔐 Direct Line Secret (FOR TESTING ONLY — DO NOT COMMIT TO PUBLIC REPO)
-const DIRECT_LINE_SECRET = "YOUR_DIRECT_LINE_SECRET_HERE"; // Replace with your actual secret
+const DIRECT_LINE_SECRET = "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // Replace with your actual secret
 
 if (!DIRECT_LINE_SECRET) {
   console.error("❌ DIRECT_LINE_SECRET is missing.");
