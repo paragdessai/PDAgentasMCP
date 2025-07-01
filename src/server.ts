@@ -131,7 +131,7 @@ const askCopilotAgent = server.tool(
     },
   },
   async ({ text, conversationId }) => {
-    const directLineSecret = "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // 🔁 Replace with actual secret or env var
+    const directLineSecret = "YOUR_DIRECT_LINE_SECRET_HERE"; // Replace with secure value or env var
     let convoId = conversationId;
 
     try {
@@ -223,6 +223,9 @@ app.get("/sse", async (req: Request, res: Response) => {
   });
 
   await server.connect(transport);
+
+  // ✅ Respond to tool discovery handshake
+  await transport.handleRequest(req, res);
 });
 
 app.post("/jokes", async (req: Request, res: Response) => {
