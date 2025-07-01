@@ -1,4 +1,9 @@
-import express, { Request, Response } from "express";
+import express, {
+  Request,
+  Response,
+  NextFunction,
+  RequestHandler,
+} from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -9,68 +14,48 @@ const server = new McpServer({
 });
 
 /* ------------------------------------------------------------------ */
-/*                              JOKE TOOLS                             */
+/*                           JOKE TOOLS                                */
 /* ------------------------------------------------------------------ */
 
-// Get Chuck Norris joke tool
-const getChuckJoke = server.tool(
-  "get-chuck-joke",
-  "Get a random Chuck Norris joke",
-  async () => {
-    const response = await fetch("https://api.chucknorris.io/jokes/random");
-    const data = await response.json();
-    return {
-      content: [{ type: "text", text: data.value }],
-    };
-  }
-);
+const getChuckJoke = server.tool("get-chuck-joke", "Get a random Chuck Norris joke", async () => {
+  const r = await fetch("https://api.chucknorris.io/jokes/random");
+  const d = await r.json();
+  return { content: [{ type: "text", text: d.value }] };
+});
 
-// Get Chuck Norris joke by category tool
 const getChuckJokeByCategory = server.tool(
   "get-chuck-joke-by-category",
   "Get a random Chuck Norris joke by category",
   { category: z.string().describe("Category of the Chuck Norris joke") },
   async ({ category }) => {
-    const response = await fetch(
+    const r = await fetch(
       `https://api.chucknorris.io/jokes/random?category=${category}`
     );
-    const data = await response.json();
-    return {
-      content: [{ type: "text", text: data.value }],
-    };
+    const d = await r.json();
+    return { content: [{ type: "text", text: d.value }] };
   }
 );
 
-// Get Chuck Norris joke categories tool
 const getChuckCategories = server.tool(
   "get-chuck-categories",
   "Get all available categories for Chuck Norris jokes",
   async () => {
-    const response = await fetch("https://api.chucknorris.io/jokes/categories");
-    const data = await response.json();
-    return {
-      content: [{ type: "text", text: data.join(", ") }],
-    };
+    const r = await fetch("https://api.chucknorris.io/jokes/categories");
+    const d = await r.json();
+    return { content: [{ type: "text", text: d.join(", ") }] };
   }
 );
 
-// Get Dad joke tool
-const getDadJoke = server.tool(
-  "get-dad-joke",
-  "Get a random dad joke",
-  async () => {
-    const response = await fetch("https://icanhazdadjoke.com/", {
-      headers: { Accept: "application/json" },
-    });
-    const data = await response.json();
-    return {
-      content: [{ type: "text", text: data.joke }],
-    };
-  }
-);
+const getDadJoke = server.tool("get-dad-joke", "Get a random dad joke", async () => {
+  const r = await fetch("https://icanhazdadjoke.com/", {
+    headers: { Accept: "application/json" },
+  });
+  const d = await r.json();
+  return { content: [{ type: "text", text: d.joke }] };
+});
 
 /* ------------------------------------------------------------------ */
-/*                NEW POWER PLATFORM DOCS DIRECT-LINE TOOL             */
+/*         NEW  ask-powerplatform-docs  (Direct Line) TOOL             */
 /* ------------------------------------------------------------------ */
 
 const askPowerPlatformDocs = server.tool(
@@ -84,24 +69,21 @@ const askPowerPlatformDocs = server.tool(
       .describe("Optional Direct Line conversation ID for multi-turn chat"),
   },
   async ({ text, conversationId }) => {
-    const directLineSecret = "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY"; // 🔁 replace or use env var
+    const directLineSecret = "YOUR_DIRECT_LINE_SECRET_HERE"; // ← replace
     let convoId = conversationId;
 
     try {
-      /* 1️⃣  Create a new Direct Line conversation if needed */
+      // 1) Start new conversation if none provided
       if (!convoId) {
-        const convoResp = await fetch(
+        const r = await fetch(
           "https://directline.botframework.com/v3/directline/conversations",
-          {
-            method: "POST",
-            headers: { Authorization: `Bearer ${directLineSecret}` },
-          }
+          { method: "POST", headers: { Authorization: `Bearer ${directLineSecret}` } }
         );
-        const convoData = await convoResp.json();
-        convoId = convoData.conversationId;
+        const d = await r.json();
+        convoId = d.conversationId;
       }
 
-      /* 2️⃣  Post the user's message */
+      // 2) Send the user's message
       await fetch(
         `https://directline.botframework.com/v3/directline/conversations/${convoId}/activities`,
         {
@@ -118,25 +100,23 @@ const askPowerPlatformDocs = server.tool(
         }
       );
 
-      /* 3️⃣  Small delay then fetch bot reply */
+      // 3) Brief pause then fetch bot reply
       await new Promise((r) => setTimeout(r, 1500));
-
-      const activityResp = await fetch(
+      const ar = await fetch(
         `https://directline.botframework.com/v3/directline/conversations/${convoId}/activities`,
         { headers: { Authorization: `Bearer ${directLineSecret}` } }
       );
-      const activityData = await activityResp.json();
-      const replies = activityData.activities.filter(
+      const ad = await ar.json();
+      const botMessages = ad.activities.filter(
         (a: any) => a.from.id !== "mcp-tool"
       );
-      const last = replies.pop();
+      const last = botMessages.pop();
 
-      /* 4️⃣  Return MCP-formatted result */
       return {
         content: [
           {
             type: "text",
-            text: last?.text || "[No reply from documentation agent]",
+            text: last?.text ?? "[No reply from documentation agent]",
           },
         ],
         metadata: { conversationId: convoId },
@@ -151,25 +131,35 @@ const askPowerPlatformDocs = server.tool(
 );
 
 /* ------------------------------------------------------------------ */
-/*                    EXPRESS + MCP TRANSPORT SETUP                    */
+/*                     EXPRESS + MCP TRANSPORT                         */
 /* ------------------------------------------------------------------ */
 
 const app = express();
 app.use(express.json());
 
-const transport: StreamableHTTPServerTransport =
-  new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+const transport = new StreamableHTTPServerTransport({
+  sessionIdGenerator: undefined, // stateless
+});
 
 const setupServer = async () => {
   await server.connect(transport);
+};
+
+/* -----  Request-handler for unsupported HTTP verbs  ---------------- */
+const methodNotAllowed: RequestHandler = (_req, res, _next: NextFunction) => {
+  res.status(405).json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Method not allowed." },
+    id: null,
+  });
 };
 
 app.post("/mcp", async (req: Request, res: Response) => {
   console.log("Received MCP request:", req.body);
   try {
     await transport.handleRequest(req, res, req.body);
-  } catch (error) {
-    console.error("Error handling MCP request:", error);
+  } catch (err) {
+    console.error("Error handling MCP request:", err);
     if (!res.headersSent) {
       res.status(500).json({
         jsonrpc: "2.0",
@@ -180,29 +170,18 @@ app.post("/mcp", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/mcp", (_req, res) =>
-  res.status(405).json({
-    jsonrpc: "2.0",
-    error: { code: -32000, message: "Method not allowed." },
-    id: null,
-  })
-);
+app.get("/mcp", methodNotAllowed);
+app.delete("/mcp", methodNotAllowed);
 
-app.delete("/mcp", (_req, res) =>
-  res.status(405).json({
-    jsonrpc: "2.0",
-    error: { code: -32000, message: "Method not allowed." },
-    id: null,
-  })
-);
+/* ------------------------------------------------------------------ */
 
 const PORT = process.env.PORT || 3000;
 setupServer()
-  .then(() => {
+  .then(() =>
     app.listen(PORT, () =>
       console.log(`MCP Streamable HTTP Server listening on port ${PORT}`)
-    );
-  })
+    )
+  )
   .catch((err) => {
     console.error("Failed to set up the server:", err);
     process.exit(1);
