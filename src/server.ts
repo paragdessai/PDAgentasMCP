@@ -1,75 +1,85 @@
+/**********************************************************************
+ * Jokes + Copilot MCP Server
+ * --------------------------------------------------------------------
+ * • Provides four joke tools
+ * • Adds `ask-copilot-agent` tool that forwards a prompt to
+ *   a Copilot Studio agent via Direct Line REST API.
+ *********************************************************************/
+
 import express, { Request, Response } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { z } from "zod";                 // ✅ NEW – for params schema
 
 // ─────────────────────────────────────────────────────────────
-// ⚠️  Hard-coded Direct Line secret
-//     (be sure the repo is private; avoid committing secrets
-//      to any public source control)
-// ─────────────────────────────────────────────────────────────
+// ⚠️  HARD-CODED Direct Line secret
+//     (safe only in private repos / test environments)
 const DIRECT_LINE_SECRET = "YOUR_DIRECT_LINE_SECRET_HERE";
+// ─────────────────────────────────────────────────────────────
 
+/* ───── MCP server manifest ───────────────────────────────── */
 const server = new McpServer({
   name: "jokesMCP",
   description: "A server that provides jokes and can query a Copilot Studio agent",
   version: "1.1.0",
   tools: [
-    { name: "get-chuck-joke",       description: "Get a random Chuck Norris joke", parameters: {} },
-    { name: "get-chuck-categories", description: "Get all available Chuck categories", parameters: {} },
-    { name: "get-dad-joke",         description: "Get a random dad joke", parameters: {} },
-    { name: "get-yo-mama-joke",     description: "Get a random Yo-Mama joke", parameters: {} },
+    { name: "get-chuck-joke",       description: "Get a random Chuck Norris joke",      parameters: {} },
+    { name: "get-chuck-categories", description: "Get all available Chuck categories",  parameters: {} },
+    { name: "get-dad-joke",         description: "Get a random dad joke",               parameters: {} },
+    { name: "get-yo-mama-joke",     description: "Get a random Yo-Mama joke",           parameters: {} },
     {
       name: "ask-copilot-agent",
       description: "Send a prompt to the Copilot Studio agent and return its reply",
       parameters: {
         type: "object",
-        properties: {
-          prompt: { type: "string", description: "The question or command for the agent" }
-        },
+        properties: { prompt: { type: "string" } },
         required: ["prompt"]
       }
     }
   ],
 });
 
-// ─── Joke tools (unchanged) ──────────────────────────────────
-const getChuckJoke = server.tool("get-chuck-joke", "", async () => {
+/* ───── Joke tools (unchanged) ────────────────────────────── */
+server.tool("get-chuck-joke",       "", async () => {
   const r = await fetch("https://api.chucknorris.io/jokes/random");
   const d = await r.json();
   return { content: [{ type: "text", text: d.value }] };
 });
-const getChuckCategories = server.tool("get-chuck-categories", "", async () => {
+
+server.tool("get-chuck-categories", "", async () => {
   const r = await fetch("https://api.chucknorris.io/jokes/categories");
   const d = await r.json();
   return { content: [{ type: "text", text: d.join(", ") }] };
 });
-const getDadJoke = server.tool("get-dad-joke", "", async () => {
+
+server.tool("get-dad-joke",         "", async () => {
   const r = await fetch("https://icanhazdadjoke.com/", { headers: { Accept: "application/json" } });
   const d = await r.json();
   return { content: [{ type: "text", text: d.joke }] };
 });
-const getYoMamaJoke = server.tool("get-yo-mama-joke", "", async () => {
+
+server.tool("get-yo-mama-joke",     "", async () => {
   const r = await fetch("https://www.yomama-jokes.com/api/v1/jokes/random");
   const d = await r.json();
   return { content: [{ type: "text", text: d.joke }] };
 });
 
-// ─── ask-copilot-agent tool ─────────────────────────────────
-const askCopilotAgent = server.tool(
+/* ───── ask-copilot-agent tool (fixed overload) ───────────── */
+server.tool(
   "ask-copilot-agent",
-  "",
+  { prompt: z.string() },                                // 👈 schema, satisfies overload #2
   async ({ prompt }: { prompt: string }) => {
-    const DL_BASE = "https://directline.botframework.com/v3/directline";
+    const DL = "https://directline.botframework.com/v3/directline";
 
-    // 1️⃣ start conversation
-    const convRes = await fetch(`${DL_BASE}/conversations`, {
+    // 1️⃣  create conversation
+    const conv = await fetch(`${DL}/conversations`, {
       method: "POST",
       headers: { Authorization: `Bearer ${DIRECT_LINE_SECRET}` }
-    });
-    const { conversationId } = await convRes.json();
+    }).then(r => r.json());
+    const { conversationId } = conv;
 
-    // 2️⃣ post user message
-    await fetch(`${DL_BASE}/conversations/${conversationId}/activities`, {
+    // 2️⃣  post user prompt
+    await fetch(`${DL}/conversations/${conversationId}/activities`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${DIRECT_LINE_SECRET}`,
@@ -82,16 +92,18 @@ const askCopilotAgent = server.tool(
       })
     });
 
-    // 3️⃣ poll for first bot reply (10 s max)
-    let reply = "The agent didn’t respond in time.";
+    // 3️⃣  poll up to 10 s for first bot reply
     const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+    let reply = "The agent didn’t respond in time.";
     for (let i = 0; i < 10; i++) {
       await wait(1000);
-      const acts = await fetch(`${DL_BASE}/conversations/${conversationId}/activities`, {
+      const acts = await fetch(`${DL}/conversations/${conversationId}/activities`, {
         headers: { Authorization: `Bearer ${DIRECT_LINE_SECRET}` }
-      });
-      const { activities } = await acts.json();
-      const botMsg = activities.find((a: any) => a.from?.role === "bot" && a.type === "message");
+      }).then(r => r.json());
+
+      const botMsg = acts.activities
+        .filter((a: any) => a.from?.role === "bot" && a.type === "message")
+        .shift();
       if (botMsg?.text) {
         reply = botMsg.text;
         break;
@@ -102,7 +114,7 @@ const askCopilotAgent = server.tool(
   }
 );
 
-// ─── Express/SSE plumbing (unchanged) ────────────────────────
+/* ───── Express + SSE plumbing (unchanged) ──────────────── */
 const app = express();
 const transports: Record<string, SSEServerTransport> = {};
 
@@ -118,14 +130,13 @@ app.get("/sse", async (req: Request, res: Response) => {
 
 app.post("/jokes", async (req: Request, res: Response) => {
   const transport = transports[req.query.sessionId as string];
-  if (transport) {
-    await transport.handlePostMessage(req, res);
-  } else {
-    res.status(400).send("No transport found for sessionId");
-  }
+  transport
+    ? await transport.handlePostMessage(req, res)
+    : res.status(400).send("No transport found for sessionId");
 });
 
 app.get("/", (_req, res) => res.send("The Jokes MCP server is running!"));
 
+/* ───── Start HTTP server ───────────────────────────────── */
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`✅ Server running at http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`✅ Server running on http://localhost:${PORT}`));
