@@ -12,7 +12,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
 
 // ─────────────────────────────────────────────────────────────
-const DIRECT_LINE_SECRET = "YOUR_DIRECT_LINE_SECRET_HERE";
+const DIRECT_LINE_SECRET = "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY";
 // ─────────────────────────────────────────────────────────────
 
 const server = new McpServer({
