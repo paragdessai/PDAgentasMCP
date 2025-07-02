@@ -1,81 +1,90 @@
 /**********************************************************************
- * Jokes + Copilot MCP Server
+ * Jokes + Copilot MCP Server  v1.3.1
+ * ────────────────────────────────────────────────────────────────────
+ * • Four joke tools
+ * • ask-copilot-agent: optional prompt + optional conversationId
+ *   – waits up to 60 s for the first bot reply
+ *   – returns the active conversationId for multi-turn chat
  *********************************************************************/
 
 import express, {
   Request,
   Response,
-  RequestHandler,            // ✅ NEW
+  RequestHandler
 } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
 
-// ─────────────────────────────────────────────────────────────
-const DIRECT_LINE_SECRET = "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY";
-// ─────────────────────────────────────────────────────────────
+/* ─────── Hard-coded Direct Line secret (replace) ────────── */
+const DIRECT_LINE_SECRET = "YOUR_DIRECT_LINE_SECRET_HERE";
 
+/* ─────── MCP server manifest ────────────────────────────── */
 const server = new McpServer({
   name: "jokesMCP",
-  description: "A server that provides jokes and can query a Copilot Studio agent",
-  version: "1.1.0",
+  description: "Provides jokes and can query a Copilot Studio agent",
+  version: "1.3.1",
   tools: [
-    { name: "get-chuck-joke",       description: "Get a random Chuck Norris joke",      parameters: {} },
-    { name: "get-chuck-categories", description: "Get all available Chuck categories",  parameters: {} },
-    { name: "get-dad-joke",         description: "Get a random dad joke",               parameters: {} },
-    { name: "get-yo-mama-joke",     description: "Get a random Yo-Mama joke",           parameters: {} },
+    { name: "get-chuck-joke",       description: "Random Chuck Norris joke", parameters: {} },
+    { name: "get-chuck-categories", description: "Available Chuck categories", parameters: {} },
+    { name: "get-dad-joke",         description: "Random dad joke",            parameters: {} },
+    { name: "get-yo-mama-joke",     description: "Random Yo-Mama joke",         parameters: {} },
     {
       name: "ask-copilot-agent",
-      description: "Send a prompt to the Copilot Studio agent and return its reply",
+      description: "Forward a prompt to the Copilot Studio agent (multi-turn-enabled)",
       parameters: {
         type: "object",
-        properties: { prompt: { type: "string" } },
-        required: ["prompt"]
+        properties: {
+          prompt:         { type: "string" },
+          conversationId: { type: "string" }
+        }
       }
     }
   ],
 });
 
-/* ───── Joke tools ────────────────────────────────────────── */
+/* ─────── Joke tools (unchanged) ─────────────────────────── */
 server.tool("get-chuck-joke", "", async () => {
-  const r = await fetch("https://api.chucknorris.io/jokes/random");
-  const d = await r.json();
+  const d = await fetch("https://api.chucknorris.io/jokes/random").then(r => r.json());
   return { content: [{ type: "text", text: d.value }] };
 });
-
 server.tool("get-chuck-categories", "", async () => {
-  const r = await fetch("https://api.chucknorris.io/jokes/categories");
-  const d = await r.json();
+  const d = await fetch("https://api.chucknorris.io/jokes/categories").then(r => r.json());
   return { content: [{ type: "text", text: d.join(", ") }] };
 });
-
 server.tool("get-dad-joke", "", async () => {
-  const r = await fetch("https://icanhazdadjoke.com/", { headers: { Accept: "application/json" } });
-  const d = await r.json();
+  const d = await fetch("https://icanhazdadjoke.com/", { headers: { Accept: "application/json" } }).then(r => r.json());
   return { content: [{ type: "text", text: d.joke }] };
 });
-
 server.tool("get-yo-mama-joke", "", async () => {
-  const r = await fetch("https://www.yomama-jokes.com/api/v1/jokes/random");
-  const d = await r.json();
+  const d = await fetch("https://www.yomama-jokes.com/api/v1/jokes/random").then(r => r.json());
   return { content: [{ type: "text", text: d.joke }] };
 });
 
-/* ───── ask-copilot-agent tool ───────────────────────────── */
+/* ─────── ask-copilot-agent (prompt + multi-turn) ────────── */
 server.tool(
   "ask-copilot-agent",
-  { prompt: z.string() },
-  async ({ prompt }: { prompt: string }) => {
+  {                                // ← Zod schema (all optional)
+    prompt: z.string().optional(),
+    conversationId: z.string().optional()
+  },
+  async (
+    { prompt, conversationId }: { prompt?: string; conversationId?: string }
+  ) => {
+
     const DL = "https://directline.botframework.com/v3/directline";
+    const userText = prompt ?? "";
 
-    // 1️⃣ create conversation
-    const conv = await fetch(`${DL}/conversations`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${DIRECT_LINE_SECRET}` }
-    }).then(r => r.json());
-    const { conversationId } = conv;
+    /* 1️⃣  Ensure a conversation exists */
+    if (!conversationId) {
+      const conv = await fetch(`${DL}/conversations`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${DIRECT_LINE_SECRET}` }
+      }).then(r => r.json());
+      conversationId = conv.conversationId;
+    }
 
-    // 2️⃣ post user prompt
+    /* 2️⃣  Post user message (even empty keeps turn order) */
     await fetch(`${DL}/conversations/${conversationId}/activities`, {
       method: "POST",
       headers: {
@@ -85,20 +94,30 @@ server.tool(
       body: JSON.stringify({
         type: "message",
         from: { id: "mcp-user" },
-        text: prompt
+        text: userText
       })
     });
 
-    // 3️⃣ poll up to 10 s for first bot reply
+    /* 3️⃣  Poll up to 60 s for first bot reply */
     const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
     let reply = "The agent didn’t respond in time.";
-    for (let i = 0; i < 10; i++) {
+    let watermark: string | undefined;
+
+    for (let i = 0; i < 60; i++) {           // 60 × 1 s = 60 s
       await wait(1000);
-      const acts = await fetch(`${DL}/conversations/${conversationId}/activities`, {
+
+      const url = new URL(
+        `${DL}/conversations/${conversationId}/activities`
+      );
+      if (watermark) url.searchParams.set("watermark", watermark);
+
+      const { activities, watermark: wm } = await fetch(url, {
         headers: { Authorization: `Bearer ${DIRECT_LINE_SECRET}` }
       }).then(r => r.json());
 
-      const botMsg = acts.activities
+      watermark = wm;                         // advance watermark
+
+      const botMsg = activities
         .filter((a: any) => a.from?.role === "bot" && a.type === "message")
         .shift();
       if (botMsg?.text) {
@@ -107,11 +126,16 @@ server.tool(
       }
     }
 
-    return { content: [{ type: "text", text: reply }] };
+    /* 4️⃣  Return reply **and** conversationId */
+    return {
+      content: [{ type: "text", text: reply }],
+      _meta: { conversationId },             // MCP-style metadata
+      conversationId                         // easy access for connector
+    };
   }
 );
 
-/* ───── Express / SSE plumbing ───────────────────────────── */
+/* ─────── Express + SSE plumbing ─────────────────────────── */
 const app = express();
 const transports: Record<string, SSEServerTransport> = {};
 
@@ -132,12 +156,13 @@ app.post("/jokes", async (req: Request, res: Response) => {
     : res.status(400).send("No transport found for sessionId");
 });
 
-/* ───── Root health endpoint (fixed) ─────────────────────── */
-const rootHandler: RequestHandler = (_req, res) => {
+/* ─────── Health endpoint ────────────────────────────────── */
+const rootHandler: RequestHandler = (_req, res) =>
   res.send("The Jokes MCP server is running!");
-};
-app.get("/", rootHandler);           // ✅ no overload ambiguity
+app.get("/", rootHandler);
 
-/* ───── Start HTTP server ───────────────────────────────── */
+/* ─────── Start HTTP server ─────────────────────────────── */
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`✅ Server running on http://localhost:${PORT}`));
+app.listen(PORT, () =>
+  console.log(`✅ Server running on http://localhost:${PORT}`)
+);
