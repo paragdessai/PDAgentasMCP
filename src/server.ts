@@ -1,186 +1,131 @@
-import express, {
-  Request,
-  Response,
-  RequestHandler,
-  NextFunction,
-} from "express";
+import express, { Request, Response } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { z } from "zod";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 
-/* ------------------------------------------------------------------ */
-/*                       MCP SERVER INITIALISE                         */
-/* ------------------------------------------------------------------ */
+// ─────────────────────────────────────────────────────────────
+// ⚠️  Hard-coded Direct Line secret
+//     (be sure the repo is private; avoid committing secrets
+//      to any public source control)
+// ─────────────────────────────────────────────────────────────
+const DIRECT_LINE_SECRET = "YOUR_DIRECT_LINE_SECRET_HERE";
 
 const server = new McpServer({
-  name: "mcp-streamable-http",
-  version: "1.0.0",
+  name: "jokesMCP",
+  description: "A server that provides jokes and can query a Copilot Studio agent",
+  version: "1.1.0",
+  tools: [
+    { name: "get-chuck-joke",       description: "Get a random Chuck Norris joke", parameters: {} },
+    { name: "get-chuck-categories", description: "Get all available Chuck categories", parameters: {} },
+    { name: "get-dad-joke",         description: "Get a random dad joke", parameters: {} },
+    { name: "get-yo-mama-joke",     description: "Get a random Yo-Mama joke", parameters: {} },
+    {
+      name: "ask-copilot-agent",
+      description: "Send a prompt to the Copilot Studio agent and return its reply",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "The question or command for the agent" }
+        },
+        required: ["prompt"]
+      }
+    }
+  ],
 });
 
-/* ------------------------------------------------------------------ */
-/*                              JOKE TOOLS                             */
-/* ------------------------------------------------------------------ */
-
-const getChuckJoke = server.tool("get-chuck-joke", "Get a random Chuck Norris joke", async () => {
+// ─── Joke tools (unchanged) ──────────────────────────────────
+const getChuckJoke = server.tool("get-chuck-joke", "", async () => {
   const r = await fetch("https://api.chucknorris.io/jokes/random");
   const d = await r.json();
   return { content: [{ type: "text", text: d.value }] };
 });
-
-const getChuckJokeByCategory = server.tool(
-  "get-chuck-joke-by-category",
-  "Get a random Chuck Norris joke by category",
-  { category: z.string() },
-  async ({ category }) => {
-    const r = await fetch(
-      `https://api.chucknorris.io/jokes/random?category=${category}`
-    );
-    const d = await r.json();
-    return { content: [{ type: "text", text: d.value }] };
-  }
-);
-
-const getChuckCategories = server.tool(
-  "get-chuck-categories",
-  "Get all available categories for Chuck Norris jokes",
-  async () => {
-    const r = await fetch("https://api.chucknorris.io/jokes/categories");
-    const d = await r.json();
-    return { content: [{ type: "text", text: d.join(", ") }] };
-  }
-);
-
-const getDadJoke = server.tool("get-dad-joke", "Get a random dad joke", async () => {
-  const r = await fetch("https://icanhazdadjoke.com/", {
-    headers: { Accept: "application/json" },
-  });
+const getChuckCategories = server.tool("get-chuck-categories", "", async () => {
+  const r = await fetch("https://api.chucknorris.io/jokes/categories");
+  const d = await r.json();
+  return { content: [{ type: "text", text: d.join(", ") }] };
+});
+const getDadJoke = server.tool("get-dad-joke", "", async () => {
+  const r = await fetch("https://icanhazdadjoke.com/", { headers: { Accept: "application/json" } });
+  const d = await r.json();
+  return { content: [{ type: "text", text: d.joke }] };
+});
+const getYoMamaJoke = server.tool("get-yo-mama-joke", "", async () => {
+  const r = await fetch("https://www.yomama-jokes.com/api/v1/jokes/random");
   const d = await r.json();
   return { content: [{ type: "text", text: d.joke }] };
 });
 
-/* ------------------------------------------------------------------ */
-/*              POWER PLATFORM DOCS AGENT (DIRECT LINE)                */
-/* ------------------------------------------------------------------ */
+// ─── ask-copilot-agent tool ─────────────────────────────────
+const askCopilotAgent = server.tool(
+  "ask-copilot-agent",
+  "",
+  async ({ prompt }: { prompt: string }) => {
+    const DL_BASE = "https://directline.botframework.com/v3/directline";
 
-const directLineSecret =
-  "G77BhCQohDYYnuyjFlo8dfXYs9Szf4UhJKf15T0ZwqHBva3AVF1SJQQJ99BFACYeBjFAArohAAABAZBS1ZXz.7bP9jumoJLViFLPxzlx2gJR92XAvUC2K4fTY7M4Qyn0YWBzrDv8rJQQJ99BFACYeBjFAArohAAABAZBS45oY";
+    // 1️⃣ start conversation
+    const convRes = await fetch(`${DL_BASE}/conversations`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${DIRECT_LINE_SECRET}` }
+    });
+    const { conversationId } = await convRes.json();
 
-const buildActivitiesUrl = (conversationId: string, watermark?: string) =>
-  watermark
-    ? `https://directline.botframework.com/v3/directline/conversations/${conversationId}/activities?watermark=${encodeURIComponent(
-        watermark
-      )}`
-    : `https://directline.botframework.com/v3/directline/conversations/${conversationId}/activities`;
+    // 2️⃣ post user message
+    await fetch(`${DL_BASE}/conversations/${conversationId}/activities`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${DIRECT_LINE_SECRET}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        type: "message",
+        from: { id: "mcp-user" },
+        text: prompt
+      })
+    });
 
-async function pollForReply(
-  conversationId: string,
-  watermark: string | undefined
-) {
-  const poll = await fetch(buildActivitiesUrl(conversationId, watermark), {
-    headers: { Authorization: `Bearer ${directLineSecret}` },
-  });
-  const data = await poll.json();
-  const botMsgs = data.activities.filter(
-    (a: any) => a.from?.id !== "mcp-tool"
-  );
-  if (botMsgs.length) {
-    const last = botMsgs.pop();
-    return { last, watermark: data.watermark };
-  }
-  return null;
-}
-
-const askPowerPlatformDocs = server.tool(
-  "ask-powerplatform-docs",
-  "Ask the Power Platform documentation Copilot agent (multi-turn supported)",
-  {
-    text: z.string(),
-    conversationId: z.string().optional(),
-  },
-  async ({ text, conversationId }) => {
-    let convoId: string | undefined = conversationId;
-    let watermark: string | undefined;
-
-    try {
-      if (!convoId) {
-        const c = await fetch(
-          "https://directline.botframework.com/v3/directline/conversations",
-          { method: "POST", headers: { Authorization: `Bearer ${directLineSecret}` } }
-        );
-        const d = await c.json();
-        convoId = d.conversationId;
-        watermark = d.watermark;
-      }
-
-      /*  assure TypeScript convoId is string from this point  */
-      const cid = convoId!;
-
-      await fetch(buildActivitiesUrl(cid), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${directLineSecret}`,
-        },
-        body: JSON.stringify({
-          type: "message",
-          from: { id: "mcp-tool" },
-          text,
-        }),
+    // 3️⃣ poll for first bot reply (10 s max)
+    let reply = "The agent didn’t respond in time.";
+    const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+    for (let i = 0; i < 10; i++) {
+      await wait(1000);
+      const acts = await fetch(`${DL_BASE}/conversations/${conversationId}/activities`, {
+        headers: { Authorization: `Bearer ${DIRECT_LINE_SECRET}` }
       });
-
-      let reply = null;
-      for (let i = 0; i < 10 && !reply; i++) {
-        await new Promise((r) => setTimeout(r, 1000));
-        reply = await pollForReply(cid, watermark);
-        if (reply) watermark = reply.watermark;
+      const { activities } = await acts.json();
+      const botMsg = activities.find((a: any) => a.from?.role === "bot" && a.type === "message");
+      if (botMsg?.text) {
+        reply = botMsg.text;
+        break;
       }
-
-      const replyText =
-        reply?.last?.text ||
-        (reply?.last?.attachments ? "[Attachment reply]" : "[No reply]");
-
-      return {
-        content: [{ type: "text", text: replyText }],
-        metadata: { conversationId: cid },
-      };
-    } catch (err) {
-      console.error("Direct Line error", err);
-      return {
-        content: [{ type: "text", text: "❌ Error contacting documentation agent." }],
-      };
     }
+
+    return { content: [{ type: "text", text: reply }] };
   }
 );
 
-/* ------------------------------------------------------------------ */
-/*                    EXPRESS + MCP TRANSPORT                          */
-/* ------------------------------------------------------------------ */
-
+// ─── Express/SSE plumbing (unchanged) ────────────────────────
 const app = express();
-app.use(express.json());
+const transports: Record<string, SSEServerTransport> = {};
 
-const transport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: undefined,
+app.get("/sse", async (req: Request, res: Response) => {
+  const host = req.get("host");
+  const fullUri = `https://${host}/jokes`;
+  const transport = new SSEServerTransport(fullUri, res);
+
+  transports[transport.sessionId] = transport;
+  res.on("close", () => delete transports[transport.sessionId]);
+  await server.connect(transport);
 });
-server.connect(transport);
 
-const methodNotAllowed: RequestHandler = (
-  _req: Request,
-  res: Response,
-  _next: NextFunction
-): void => {
-  res.status(405).json({
-    jsonrpc: "2.0",
-    error: { code: -32000, message: "Method not allowed." },
-    id: null,
-  });
-};
+app.post("/jokes", async (req: Request, res: Response) => {
+  const transport = transports[req.query.sessionId as string];
+  if (transport) {
+    await transport.handlePostMessage(req, res);
+  } else {
+    res.status(400).send("No transport found for sessionId");
+  }
+});
 
-app.post("/mcp", (req, res) => transport.handleRequest(req, res, req.body));
-app.get("/mcp", methodNotAllowed);
-app.delete("/mcp", methodNotAllowed);
+app.get("/", (_req, res) => res.send("The Jokes MCP server is running!"));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`✅ MCP Streamable HTTP Server running on port ${PORT}`)
-);
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => console.log(`✅ Server running at http://localhost:${PORT}`));
